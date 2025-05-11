@@ -11,9 +11,11 @@ class Delivery(models.Model):
             ('out_for_delivery', 'Out for Delivery'),
             ('delivered', 'Delivered'),
             ('failed', 'Failed'),
+            ('returned', 'Returned'),  # New status
         ],
         default='pending'
     )
+    
     delivered_at = models.DateTimeField(blank=True, null=True)
 
     def __str__(self):

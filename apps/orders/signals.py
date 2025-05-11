@@ -27,61 +27,97 @@ def update_inventory_on_order_change(sender, instance, created, **kwargs):
         previous_status = _previous_order_status.pop(instance.pk, None)
 
         if previous_status != current_status:
-            # Pending to Canceled: No stock change (order was never completed)
-            if previous_status == "Pending" and current_status == "Canceled":
-                logger.info(f"Order {instance.order_id} changed from Pending to Canceled (no stock change).")
-
-            # Pending to Completed: Decrease stock
-            elif previous_status == "Pending" and current_status == "Completed":
+            if current_status == "Completed" and previous_status != "Completed":
+                # Logic: Order became 'Completed' from a non-'Completed' state.
+                # Action: Decrease stock.
                 product.stock_quantity -= quantity
                 product.save()
                 StockMovement.objects.create(
                     product=product,
                     movement_type='OUT',
                     quantity=quantity,
-                    # reason=f"Order {instance.order_id} completed (from Pending)"
                 )
-                logger.info(f"Order {instance.order_id} marked as Completed from Pending. Stock decreased.")
+                logger.info(f"Order {instance.order_id} marked as Completed. Stock decreased.")
 
-            # Completed to Canceled: Increase stock
-            elif previous_status == "Completed" and current_status == "Canceled":
+            elif current_status == "Canceled" and previous_status == "Completed":
+                # Logic: Order changed from 'Completed' to 'Canceled'.
+                # Action: Increase stock.
                 product.stock_quantity += quantity
                 product.save()
                 StockMovement.objects.create(
                     product=product,
                     movement_type='IN',
                     quantity=quantity,
-                    # reason=f"Order {instance.order_id} canceled (from Completed)"
                 )
                 logger.info(f"Order {instance.order_id} marked as Canceled from Completed. Stock increased.")
 
-            # Completed to Pending: Increase stock
+            elif current_status == "Canceled" and previous_status != "Completed":
+                # Logic: Order became 'Canceled' from a non-'Completed' state.
+                # Action: No stock change (stock was not decreased yet).
+                logger.info(f"Order {instance.order_id} marked as Canceled from {previous_status} (no stock change).")
+
             elif previous_status == "Completed" and current_status == "Pending":
+                # Logic: Order changed from 'Completed' back to 'Pending'.
+                # Action: Increase stock (as it was decreased on completion).
                 product.stock_quantity += quantity
                 product.save()
                 StockMovement.objects.create(
                     product=product,
                     movement_type='IN',
                     quantity=quantity,
-                    # reason=f"Order {instance.order_id} changed from Completed to Pending"
                 )
                 logger.info(f"Order {instance.order_id} changed from Completed to Pending. Stock increased.")
 
-            # Canceled to Pending: No stock change (order was never completed)
-            elif previous_status == "Canceled" and current_status == "Pending":
-                logger.info(f"Order {instance.order_id} changed from Canceled to Pending (no stock change).")
-
-            # Canceled to Completed: Decrease stock (order is being reactivated and completed)
-            elif previous_status == "Canceled" and current_status == "Completed":
-                product.stock_quantity -= quantity
+            elif previous_status == "Completed" and current_status not in ["Completed", "Failed", "Returned", "Delivery Failed"]:
+                # Logic: Order changed from 'Completed' to another intermediate status.
+                # Action: Increase stock (as it was decreased on completion).
+                product.stock_quantity += quantity
                 product.save()
                 StockMovement.objects.create(
                     product=product,
-                    movement_type='OUT',
+                    movement_type='IN',
                     quantity=quantity,
-                    # reason=f"Order {instance.order_id} completed (from Canceled)"
                 )
-                logger.info(f"Order {instance.order_id} marked as Completed from Canceled. Stock decreased.")
+                logger.info(f"Order {instance.order_id} changed from Completed to {current_status}. Stock increased.")
+
+            elif current_status in ["Failed", "Returned", "Delivery Failed"] and previous_status == "Completed":
+                # Logic: Order went from 'Completed' to a final/failure state after completion.
+                # Action: Increase stock (as the product was not successfully sold).
+                product.stock_quantity += quantity
+                product.save()
+                StockMovement.objects.create(
+                    product=product,
+                    movement_type='IN',
+                    quantity=quantity,
+                )
+                logger.info(f"Order {instance.order_id} marked as {current_status} from Completed. Stock increased.")
+
+            elif current_status in ["Failed", "Returned"] and previous_status == "Delivery Failed":
+                # Logic: Order went from 'Delivery Failed' to 'Failed' or 'Returned'.
+                # Action: Increase stock (as the product was not successfully sold).
+                product.stock_quantity += quantity
+                product.save()
+                StockMovement.objects.create(
+                    product=product,
+                    movement_type='IN',
+                    quantity=quantity,
+                )
+                logger.info(f"Order {instance.order_id} marked as {current_status} from Delivery Failed. Stock increased.")
+
+            elif current_status in ["Failed", "Returned", "Delivery Failed"] and previous_status not in ["Completed", "Delivery Failed"]:
+                # Logic: Order reached a final/failure state without being 'Completed'.
+                # Action: No stock change (stock was not decreased).
+                logger.info(f"Order {instance.order_id} marked as {current_status} from {previous_status} (no stock change).")
+
+            elif current_status == "Pending" and previous_status != "Completed":
+                # Logic: Order is in 'Pending' state and wasn't 'Completed' before.
+                # Action: No stock change (stock is decreased only on completion).
+                logger.info(f"Order {instance.order_id} is now Pending from {previous_status} (no stock change).")
+
+            elif current_status == "Out for Delivery" and previous_status != "Completed":
+                # Logic: Order is 'Out for Delivery' and wasn't 'Completed' before.
+                # Action: No stock change (stock is decreased only on completion).
+                logger.info(f"Order {instance.order_id} is now Out for Delivery from {previous_status} (no stock change).")
 
 
 @receiver(delivery_confirmed, sender='apps.delivery.models.Delivery')
